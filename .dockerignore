@@ -1,0 +1,8 @@
+.git
+.venv
+zeus-app
+tests
+training
+scripts
+**/__pycache__
+*.apk

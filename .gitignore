@@ -1,0 +1,17 @@
+# Python-generated files
+__pycache__/
+*.py[oc]
+build/
+dist/
+wheels/
+*.egg-info
+
+# Virtual environments
+.venv
+
+# Test/verktøy
+.pytest_cache/
+.ruff_cache/
+
+# Lokale arbeidsfiler for Claude Code (ikke del av prosjektet)
+.claude/

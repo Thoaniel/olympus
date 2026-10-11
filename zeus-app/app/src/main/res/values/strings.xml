@@ -1,0 +1,11 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="sc_zeus">Spør Zeus</string>
+    <string name="sc_zeus_long">ϟ Spør Zeus</string>
+    <string name="sc_plan">Plan</string>
+    <string name="sc_plan_long">▦ Planen</string>
+    <string name="sc_media">Media</string>
+    <string name="sc_media_long">♪ Media</string>
+    <string name="sc_pc">PC</string>
+    <string name="sc_pc_long">◈ PC-en</string>
+</resources>

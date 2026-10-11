@@ -1,0 +1,215 @@
+# Olympus-konfigurasjon. Endre med `olympus config set <nøkkel> <verdi>` eller rediger direkte.
+# Olympus er Zeus, din lokale assistent: hjernen (minne, verktøy, plan, godkjenninger, økter) er alltid på PC-en.
+# Modellen som svarer velges i samtalen (/modell eller F7) og lagres som agents.zeus.model i ~/.olympus/config.toml.
+
+[general]
+local_model = "gemma4-26b-a4b"    # «tilbake til lokalt» (/modell lokal) og reserven når en skymodell ikke svarer
+startup_animation = true
+read_project_context = true   # les AGENTS.md / OLYMPUS.md i aktiv mappe
+
+[paths]
+models_dir = "~/.olympus/models"
+logs_dir = "~/.olympus/logs"
+sessions_dir = "~/.olympus/sessions"  # lagrede samtaler (Ctrl+O)
+
+[vram]
+budget_gb = 15.0
+# Anslått ekstra VRAM (GiB) per språkmodell utover vektfilen (KV-cache, buffere).
+# Brukes før lasting; etter lasting måles faktisk bruk.
+overhead_gb = 0.8
+# Modeller som helst skal bli liggende i VRAM når en annen må ut (tom: den minst nylig brukte går ut).
+keep_warm = []
+
+[web]
+# olympus web: mobil-app over Tailscale. host = "auto" lytter på localhost + Tailscale-adressen (aldri 0.0.0.0).
+host = "auto"
+port = 8787
+idle_unload = 300            # sekunder uten aktivitet før modellen frigjøres fra GPU-en (0 = med en gang etter svar)
+
+[memory]
+# Varig minne (som Hermes): ~/.olympus/memory/MEMORY.md (Zeus' notater) og USER.md (om deg). Leses inn i
+# systemprompten ved øktstart; Zeus oppdaterer det med memory-verktøyet. Fast størrelse – han må rydde selv.
+agent_chars = 2200
+user_chars = 1375
+share_with_cloud = true      # ta med minnet når du har byttet til en skymodell; false = minnet blir alltid på PC-en
+
+[compression]
+# Når samtalen passerer denne andelen av modellens kontekstvindu, oppsummeres midtpartiet (/komprimer gjør det nå).
+enabled = true
+threshold = 0.5
+protect_first = 2            # første runde (spørsmål + svar) står ordrett
+protect_last = 6             # siste meldinger står ordrett
+cloud_timeout = 30           # sekunder før en skymodell gis opp som oppsummerer (da prøves den lokale)
+
+[media_server]
+# Olympus' eget mediebibliotek. Nedlastinger (media add) lagres hit; biblioteket leser nye filer av seg selv.
+# Standard: den mappa som finnes av ~/Musikk og ~/Music (osv.); finnes ingen, etter språket systemet bruker.
+# Sett egne stier her (én sti eller en liste), f.eks.:
+# music_dir = "~/Music"
+# film_dir = ["~/Videos/Movies", "/mnt/nas/filmer"]
+# show_dir = "~/Videos/TV"
+# audiobook_dir = "~/Audiobooks"
+# ebook_dir = "~/Books"
+# podcast_dir = "~/Podcasts"
+
+[llamacpp]
+binary = "llama-server"
+host = "127.0.0.1"
+port = 8770
+ctx_size = 16384
+gpu_layers = 99
+extra_args = ["--jinja", "--flash-attn", "on", "--no-webui"]
+startup_timeout = 180
+
+[thermal]
+enabled = true
+gpu_junction_max = 95    # RX 9070 XT er kritisk ved 110 °C
+gpu_mem_max = 94         # kritisk ved 108 °C
+cpu_max = 90             # i7-14700F er kritisk ved 100 °C
+nvme_max = 75
+hysteresis = 10          # fortsett først når alt er så mange grader under grensen
+
+[training]
+# Lærer: skriver riktige svar til treningsparene når du bruker /feil. Fritt valg,
+# f.eks. "claude-code/opus" eller "gemini/gemini-flash-latest". Treningen gjelder de lokale modellene.
+teacher = "groq/openai/gpt-oss-120b"
+min_pairs_for_lora = 200
+auto_min_new = 60           # nye eksempler fra Zevs før en modell trenes på nytt (training/auto.py)
+
+[library]
+dir = "~/.olympus/library"     # arch-wiki/ (offline-pakken) og docs/ (egne dokumenter)
+wiki_languages = ["en"]
+extra_dirs = ["~/.olympus/library-src/tldr/pages/common", "~/.olympus/library-src/tldr/pages/linux"]  # tldr: korte eksempler for 5 000+ kommandoer
+
+[tools]
+enabled = true
+max_steps = 12          # maks verktøyrunder per svar
+shell_timeout = 120     # sekunder
+quota_wait = 10         # vent opptil så mange sekunder når en gratisprovider ber om det (429)
+cloud_read_lines = 120  # read_file leser færre linjer om gangen for gratis skymodeller (tokenkvote)
+
+# ---- Modeller ----
+# kind = "llm" (llama.cpp/GGUF). Alle nedlastede språkmodeller kan velges med /modell.
+[models.gemma4-26b-a4b]
+description = "Gemma 4 26B-A4B (Google, MoE, QAT Q4_K_XL). 26 mrd. parametre, ~4 mrd. aktive per token. Trent av Google for å tåle 4-bit (QAT), og sterkere på norsk enn Qwen. MTP gjetter to tokens fram for mer fart."
+good_for = ["write", "code", "linux"]
+repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
+file = "gemma-4-26B-A4B-it-qat-UD-Q4_K_XL.gguf"
+kind = "llm"
+size_gb = 14.25
+license = "apache-2.0"
+thinking = false
+draft = "gemma4-26b-a4b-mtp"
+# KV-cachen må være f16: kvantisert KV får MTP-treffraten ned mot null på Gemma 4. Over 2 gjettede tokens koster mer
+# enn det gir på et 16 GB-kort (målt: 1 = 147 tok/s, 2 = 152 tok/s).
+# Én bruker: ett spor (-np 1) og ingen SWA-sjekkpunkter/lagring av ledige spor – målt på de 40 oppgavene:
+# median 1,02 → 0,78 s, prompt per runde 197 → 88 ms, lasting 7 → 4 s. Prefikset (systemprompt + verktøy) gjenbrukes
+# fortsatt mellom samtaler så lenge historikken bare legges til (append-only).
+args = ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2", "-np", "1", "--ctx-checkpoints", "0", "--no-cache-idle-slots"]
+
+[models.gemma4-26b-a4b-mtp]
+description = "MTP-hodet til Gemma 4 26B-A4B (spekulativ dekoding). Ikke en egen samtalemodell."
+repo = "unsloth/gemma-4-26B-A4B-it-qat-GGUF"
+file = "mtp-gemma-4-26B-A4B-it.gguf"
+kind = "draft"
+size_gb = 0.25
+license = "apache-2.0"
+
+[models.qwen36-35b-a3b]
+description = "Qwen3.6 35B-A3B (MoE, IQ3_XXS). 35 mrd. parametre, ~3 mrd. aktive per token: kunnskapen til en stor modell, farten til en liten (målt 128 tok/s). Raskere, men tapte blindtesten mot 27B 9–31."
+good_for = ["write", "code", "linux"]
+repo = "unsloth/Qwen3.6-35B-A3B-GGUF"
+file = "Qwen3.6-35B-A3B-UD-IQ3_XXS.gguf"
+kind = "llm"
+size_gb = 13.2
+license = "apache-2.0"
+thinking = false
+
+[models.qwen36-27b]
+description = "Qwen3.6 27B (dense, IQ3_XXS). Alle 27 mrd. parametre brukes per token. Vant blindtesten mot 35B-A3B 31–9 (Opus som dommer); 38 tok/s. Standard for Zeus."
+good_for = ["write", "code", "linux"]
+repo = "unsloth/Qwen3.6-27B-GGUF"
+file = "Qwen3.6-27B-UD-IQ3_XXS.gguf"
+kind = "llm"
+size_gb = 12.0
+license = "apache-2.0"
+thinking = false
+
+[models.qwen35-9b]
+description = "Qwen3.5 9B (Q4_K_M). Liten og rask (~6 GB VRAM, kan ligge lastet hele tiden); svakere norsk og resonnering enn 27B. Til test med velger."
+good_for = ["write"]
+repo = "unsloth/Qwen3.5-9B-GGUF"
+file = "Qwen3.5-9B-Q4_K_M.gguf"
+kind = "llm"
+size_gb = 5.7
+license = "apache-2.0"
+thinking = false
+
+# ---- Zeus ----
+# Systemprompten ligger i olympus/defaults/agents/zeus.md og kan overstyres i ~/.olympus/agents/zeus.md.
+# model = modellen som svarer (lokal id eller provider/modell); bytt med /modell, F7 eller Zeus-appen.
+[agents.zeus]
+tools = ["plan", "dato", "media_search", "media", "pc", "tv", "web", "playlist", "audio", "media_find", "media_get", "downloads", "model", "memory", "session_search", "library_search", "library_read", "snl_search", "snl_read", "read_file", "list_dir", "search_files", "write_file", "edit_file", "shell"]
+display = "Zeus"
+icon = "ϟ"
+model = "gemma4-26b-a4b"
+temperature = 0.2
+
+# ---- Providers (skymodeller du kan bytte til i samtalen: modell = "provider/modell") ----
+# Lokale modeller skrives uten prefiks (eller "local/…") og kjøres av llama.cpp.
+# cost: gratis | gratisnivå | abonnement | betalt. Modellvalget viser ikke «betalt» (per token).
+# may_train = true: gratisnivået kan bruke det du sender til å trene modeller.
+# models = skymodellene /modell viser; flere hentes fra provideren når du åpner valget.
+# Nøkler legges inn i TUI-en (⚙ Sky-modeller) og lagres i ~/.olympus/auth.json (rettighet 600).
+
+[providers.groq]
+type = "openai"
+label = "Groq"
+base_url = "https://api.groq.com/openai/v1"
+cost = "gratisnivå"
+signup = "https://console.groq.com/keys"
+note = "Gratis uten kort. Grenser per modell (ca. 30 forespørsler/min, 1 000–14 400/dag)."
+context = 131072
+models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
+
+[providers.openrouter]
+type = "openai"
+label = "OpenRouter"
+base_url = "https://openrouter.ai/api/v1"
+model_filter = ":free"
+cost = "gratisnivå"
+may_train = true
+signup = "https://openrouter.ai/settings/keys"
+note = "Bare :free-modeller vises. 20/min og 50/dag uten kjøp. Noen gratisverter kan trene på data; slå det av under Settings → Privacy."
+context = 131072
+
+[providers.gemini]
+type = "openai"
+label = "Google Gemini"
+base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
+cost = "gratisnivå"
+may_train = true
+signup = "https://aistudio.google.com/apikey"
+note = "Gratisnivå uten kort, men lave dagskvoter på nyere modeller. Google kan bruke data fra gratisnivået til å forbedre tjenestene."
+context = 1000000
+models = ["gemini-flash-latest"]
+
+[providers.claude-code]
+type = "claude-code"     # den offisielle `claude`-CLI-en; bruker abonnementet du allerede har
+label = "Claude Code"
+binary = "claude"
+cost = "betalt · abonnement"
+note = "Betalt assistent: bruker Claude-abonnementet ditt via `claude -p`. Ingen ekstra kostnad per melding, men krever abonnement."
+read_tools = true        # Claude kan lese filer i arbeidsmappen (Read/Glob/Grep), ikke endre
+effort = ""
+context = 1000000
+models = ["opus", "sonnet", "haiku"]
+
+[providers.anthropic]
+type = "anthropic"       # betalt per token; vises ikke i modellvalget
+label = "Anthropic API"
+api_key_env = "ANTHROPIC_API_KEY"
+cost = "betalt"
+effort = ""
+context = 1000000
+

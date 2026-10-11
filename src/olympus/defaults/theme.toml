@@ -1,0 +1,15 @@
+# Fargetema for Olympus. Hex-farger.
+
+[ui]
+background = "#0d0d12"
+surface = "#16161f"
+text = "#e8e6df"
+muted = "#7a7686"
+accent = "#d4a73a"
+error = "#e0605e"
+gradient_start = "#b8862b"   # gull
+gradient_end = "#ffffff"     # hvit
+
+[agents]
+zeus = "#f4d35e"
+user = "#9aa4b2"

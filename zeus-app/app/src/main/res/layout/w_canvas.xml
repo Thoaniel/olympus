@@ -1,0 +1,17 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Alle Zeus-widgetene: et tegnet bilde (WidgetArt) og usynlige trykkfelt over det.
+     Øverste 62 % = åpne appen; nederste 38 %: venstre 40 % + tre knapper à 20 % (tegnet på samme sted i bildet). -->
+<FrameLayout xmlns:android="http://schemas.android.com/apk/res/android" android:id="@+id/w_root"
+    android:layout_width="match_parent" android:layout_height="match_parent">
+    <ImageView android:id="@+id/w_img" android:layout_width="match_parent" android:layout_height="match_parent"
+        android:scaleType="fitXY" android:src="@drawable/w_bg" android:contentDescription="Zeus" />
+    <LinearLayout android:layout_width="match_parent" android:layout_height="match_parent" android:orientation="vertical">
+        <FrameLayout android:id="@+id/w_top" android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="62" />
+        <LinearLayout android:layout_width="match_parent" android:layout_height="0dp" android:layout_weight="38" android:orientation="horizontal">
+            <FrameLayout android:id="@+id/w_a" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="40" />
+            <FrameLayout android:id="@+id/w_b" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="20" />
+            <FrameLayout android:id="@+id/w_c" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="20" />
+            <FrameLayout android:id="@+id/w_d" android:layout_width="0dp" android:layout_height="match_parent" android:layout_weight="20" />
+        </LinearLayout>
+    </LinearLayout>
+</FrameLayout>

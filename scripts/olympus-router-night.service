@@ -1,0 +1,8 @@
+[Unit]
+Description=Olympus: velgeren lærer av samtalene (natt, CPU, noen sekunder)
+
+[Service]
+Type=oneshot
+WorkingDirectory=%h/dev/olympus
+ExecStart=%h/dev/olympus/.venv/bin/python training/nightly_router.py
+Nice=19

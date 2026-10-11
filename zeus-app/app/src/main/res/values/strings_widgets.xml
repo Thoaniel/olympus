@@ -1,0 +1,7 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="w_big">Klokke, PC-en og nedlastinger i én</string>
+    <string name="w_clock">Klokke og dato i ASCII-sifre</string>
+    <string name="w_pc">GPU-temperatur, målere for GPU/CPU/disk og nettverk</string>
+    <string name="w_dl">Nedlastinger som pågår, med framdrift og fart</string>
+</resources>

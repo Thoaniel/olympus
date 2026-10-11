@@ -1,0 +1,14 @@
+# NVIDIA: docker compose -f docker-compose.yml -f docker-compose.nvidia.yml up -d  (krever nvidia-container-toolkit)
+services:
+  olympus:
+    build:
+      args:
+        LLAMA_IMAGE: ghcr.io/ggml-org/llama.cpp:server-cuda
+    devices: !reset []
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: all
+              capabilities: [gpu]

@@ -1,0 +1,76 @@
+<!doctype html>
+<html lang="no">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, interactive-widget=resizes-content">
+  <meta name="theme-color" content="#0d0d12">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <title>Olympus</title>
+  <link rel="manifest" href="/manifest.json">
+  <link rel="icon" href="/icon.svg">
+  <link rel="apple-touch-icon" href="/icon.svg">
+  <link rel="stylesheet" href="/style.css">
+</head>
+<body>
+  <header id="top">
+    <button id="menu" class="icon" aria-label="Økter">☰</button>
+    <div id="title"><span class="logo">ϟ</span> Zeus</div>
+    <button id="model" class="pill" title="Modellen Zeus svarer med – trykk for å bytte">…</button>
+    <span id="conn" class="dot" title="Tilkobling"></span>
+  </header>
+
+  <aside id="drawer" hidden>
+    <div class="drawer-head">
+      <b>Økter</b>
+      <button id="close-drawer" class="icon" aria-label="Lukk">✕</button>
+    </div>
+    <button id="new" class="primary wide">+ Ny økt</button>
+    <label class="drawer-label" for="models">Modell (Zeus' hjerne er alltid på PC-en)</label>
+    <select id="models"></select>
+    <p id="model-warn" class="drawer-label" hidden></p>
+    <ul id="sessions"></ul>
+  </aside>
+  <div id="scrim" hidden></div>
+
+  <main id="log" aria-live="polite">
+    <section id="welcome">
+      <pre class="temple" aria-hidden="true">            ██████╗
+      ██████████████████╗
+██████████╔═════════██████████╗
+████╔═════╝         ╚═════████║
+╚═══╝                     ╚═══╝
+ ████████████████████████████╗
+ ╚═══════════════════════════╝
+ ████████████████████████████╗
+ ╚████╔████╔═████╔═████╔████╔╝
+  ████║████║ ████║ ████║████║
+  ████║████║ ████║ ████║████║
+ ████████████████████████████╗
+██████████████████████████████╗
+╚═════════════════════════════╝</pre>
+      <h1>O L Y M P U S</h1>
+      <p>Zeus – din lokale assistent. Minne, verktøy og plan blir på PC-en.</p>
+      <div class="examples">
+        <button data-q="Hva står på planen min i dag?">ϟ Dagens plan</button>
+        <button data-q="Hvorfor starter ikke en systemd-tjeneste? Hvordan feilsøker jeg?">ϟ Feilsøk en tjeneste</button>
+        <button data-q="Hvor mye ledig diskplass har PC-en?">ϟ Sjekk PC-en</button>
+        <button data-q="Spill noe rolig på høyttalerne">♪ Spill noe på høyttalerne</button>
+        <button data-q="Hvilke filmer og serier har jeg?">▶ Hva har jeg å se på?</button>
+      </div>
+    </section>
+  </main>
+
+  <div id="status" hidden></div>
+
+  <footer id="composer">
+    <form id="form">
+      <textarea id="input" rows="1" placeholder="Skriv til Zeus …" enterkeyhint="send" autocomplete="off"></textarea>
+      <button id="send" class="primary round" type="submit" aria-label="Send">⏎</button>
+      <button id="stop" class="danger round" type="button" aria-label="Avbryt" hidden>■</button>
+    </form>
+  </footer>
+
+  <script src="/app.js"></script>
+</body>
+</html>

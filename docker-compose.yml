@@ -1,0 +1,19 @@
+# Olympus (Zeus) i Docker. Mediemappene monteres inn; data (samtaler, plan, modeller) ligger i ./data.
+services:
+  olympus:
+    build: .
+    image: olympus:latest
+    restart: unless-stopped
+    ports:
+      # Bare denne maskinen som standard. Telefonen: bruk Tailscale (anbefalt) – eller bytt til
+      # "<din-LAN-IP>:8787:8787" for hjemmenettet. Aldri "8787:8787" på en maskin som er åpen mot internett.
+      - "127.0.0.1:8787:8787"
+    volumes:
+      - ./data:/data
+      - ${MUSIC_DIR:-~/Music}:/data/Music
+      - ${MOVIES_DIR:-~/Videos/Movies}:/data/Videos/Movies
+      - ${SHOWS_DIR:-~/Videos/TV}:/data/Videos/TV
+      - ${AUDIOBOOKS_DIR:-~/Audiobooks}:/data/Audiobooks
+      - ${BOOKS_DIR:-~/Books}:/data/Books
+    devices:
+      - /dev/dri:/dev/dri    # AMD/Intel-GPU (Vulkan); fjern linjen for bare CPU

@@ -1,0 +1,8 @@
+# Dine Olympus-innstillinger. Alt her overstyrer standardverdiene.
+# Se alle innstillinger med `olympus config get`, endre med `olympus config set <nøkkel> <verdi>`.
+#
+# Modellen Zeus svarer med byttes i samtalen (/modell eller F7) og lagres her som agents.zeus.model.
+#
+# Eksempler:
+# [vram]
+# budget_gb = 14.0

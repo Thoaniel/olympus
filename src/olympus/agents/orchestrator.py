@@ -19,7 +19,7 @@ from olympus.chat import system_prompt
 from olympus.config import ZEUS, Config
 from olympus.model_manager import ModelManager
 from olympus.providers import Backends, QuotaError
-from olympus.tools import Approval, Toolbox, ToolCall, ToolResult
+from olympus.tools import OUTBOUND_AFTER_WEB, Approval, Toolbox, ToolCall, ToolResult
 
 # Spør brukeren om et verktøykall. Svar: "yes" | "no" | "always" (resten av økten).
 Approver = Callable[[ToolCall, Approval], Awaitable[str]]
@@ -519,8 +519,10 @@ class Orchestrator:
                 self._log_tool(call, "avslått av brukeren – ingenting ble gjort")
                 return ToolResult(False, "Brukeren avslo dette kallet. Ikke prøv det samme igjen.", "avslått", denied=True)
         result = await self.toolbox.run(call)
-        if call.name == "web" and call.args.get("action") in ("read", "open") and result.ok:
-            self.toolbox.web_tainted = True  # se Toolbox.approval: videre søk må godkjennes i denne runden
+        if result.ok and f"{call.name}:{call.args.get('action') or ''}" in OUTBOUND_AFTER_WEB:
+            # Alt hentet utenfra (sider, søketreff, leksikon, torrenttitler) kan inneholde prompt-injeksjon:
+            # videre utgående kall må godkjennes i resten av runden (se Toolbox.approval)
+            self.toolbox.web_tainted = True
         self._log_tool(call, ("ok: " if result.ok else "feilet: ") + (result.summary or "").strip().replace("\n", " ")[:120],
                        result.output)
         return result

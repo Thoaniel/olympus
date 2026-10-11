@@ -578,13 +578,14 @@ class Toolbox:
         key = f"{call.name}:{call.args.get('action') or ''}"
         # Etter en lest nettside kan Zeus være lurt (prompt-injeksjon): alt som sender noe ut av maskinen må da godkjennes
         # i resten av runden – ikke bare web, men søk i åpne kilder, leksikon, stedsoppslag og lenker.
-        if self.web_tainted and not appr.needed and not appr.reject and key in OUTBOUND_AFTER_WEB:
-            appr = Approval(True, "Zeus vil sende noe ut etter å ha lest en nettside",
-                            preview=json.dumps(call.args, ensure_ascii=False)[:500])
         own_rules = {"shell", "read_file", "list_dir", "search_files", "write_file", "edit_file"}  # har egne, strengere regler
         if call.name not in actions.GENERATED and call.name not in own_rules and key in self.session_allow \
                 and appr.needed and not appr.danger and not appr.reject:
             appr.needed = False
+        # Sjekkes etter «alltid»: når innhold fra nettet er lest, spør vi uansett hva som er godkjent tidligere.
+        if self.web_tainted and not appr.needed and not appr.reject and key in OUTBOUND_AFTER_WEB:
+            appr = Approval(True, "Zeus vil sende noe ut etter å ha lest innhold fra nettet",
+                            preview=json.dumps(call.args, ensure_ascii=False)[:500])
         return appr
 
     def _approval(self, call: ToolCall) -> Approval:
@@ -598,13 +599,14 @@ class Toolbox:
             appr = actions.zeus_approval(self.ctx(), name, a, self.cloud)
             # Etter at Zeus har lest en nettside i denne runden, kan siden ha lurt ham (prompt-injeksjon): da må nye søk
             # og sider godkjennes, så private data ikke kan lekke ut gjennom søkeord eller lenker
-            if name == "web" and self.web_tainted and not appr.needed:
-                appr = Approval(True, "Zeus vil søke/lese videre etter å ha lest en nettside – søket sendes ut",
-                                preview=str(a.get("query") or a.get("url") or f"treff {a.get('n')}"))
             # «Godkjenn alltid i denne samtalen» gjelder akkurat denne handlingen (plan:add, ikke all plan), aldri
             # røde kall – og lenker serveren skal kontakte, spør fortsatt (enforce_egress under)
             if f"{name}:{a.get('action') or ''}" in self.session_allow and appr.needed and not appr.danger and not appr.reject:
                 appr.needed = False
+            # Etter innhold fra nettet gjelder ikke «alltid»: et lurt søk kunne ellers lekke private data uten spørsmål
+            if name == "web" and self.web_tainted and not appr.needed:
+                appr = Approval(True, "Zeus vil søke/lese videre etter innhold fra nettet – søket sendes ut",
+                                preview=str(a.get("query") or a.get("url") or f"treff {a.get('n')}"))
             # Lenker Zeus har valgt: alltid ja først, med hele lenken på kortet (håndheves her for alle handlinger)
             return actions.enforce_egress(actions.for_tool(name, str(a.get("action") or "")), a, appr)
         if name == "media_search" and self.cloud:

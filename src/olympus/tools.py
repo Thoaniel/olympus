@@ -529,7 +529,10 @@ class Toolbox:
     cloud: bool = False  # modellen kjører i skyen: lesing utenfor arbeidsmappen krever ja
     timeout: float = 120.0
     session_allow: set[str] = field(default_factory=set)  # verktøy godkjent for resten av økten
-    web_tainted: bool = False  # Zeus har lest en nettside i denne runden (se approval)
+    # Innhold utenfra er kommet inn i samtalen (nettside, søk, MCP-resultat uten «rent»-merke …). Gjelder resten av
+    # samtalen: orkestratoren setter den fra historikken ved hver runde (_tainted på lagrede meldinger), så den
+    # overlever lagring/åpning av økta. Se approval.
+    web_tainted: bool = False
     undo_instead: bool = True  # tools.undo_instead: angrebare endringer (én avtale) uten kort, med «↶ angre»
     library: Any = None  # olympus.library.Library
     max_read_lines: int | None = None  # satt for gratis skymodeller (tokenkvote per minutt)
@@ -544,6 +547,8 @@ class Toolbox:
     dl: Any = None  # olympus.downloads.Downloads
     found: dict[str, Any] = field(default_factory=dict)  # treff fra media_find (id → Result)
     hub: Any = None  # olympus.web.server.Hub (modellbytte, økter, kringkasting) – bare i serveren
+    mcp: Any = None  # olympus.mcp_client.McpHub (verktøy fra lokale MCP-servere, mcp_*)
+    mcp_notice: Any = None  # kalles med en tekst til chatten mens et MCP-kall venter («venter på godkjenning …»)
 
     def ctx(self) -> Any:
         """Konteksten handlingene i olympus.actions kjører med når Zeus kaller dem."""
@@ -569,6 +574,11 @@ class Toolbox:
             return str(p).replace(str(Path.home()), "~", 1)
 
     # --- godkjenning -----------------------------------------------------
+    def allowed(self, key: str) -> bool:
+        """«Alltid i økten» – men ikke når innhold utenfra er lest og modellen er i skyen (da kan en injisert ordre
+        ellers lekke data ut uten spørsmål)."""
+        return key in self.session_allow and not (self.web_tainted and self.cloud)
+
     def approval(self, call: ToolCall) -> Approval:
         appr = self._approval(call)
         # «Godkjenn alltid i denne samtalen» (appen/Lab's) gjelder akkurat denne handlingen (plan:add, ikke all plan),
@@ -579,8 +589,10 @@ class Toolbox:
         # Etter en lest nettside kan Zeus være lurt (prompt-injeksjon): alt som sender noe ut av maskinen må da godkjennes
         # i resten av runden – ikke bare web, men søk i åpne kilder, leksikon, stedsoppslag og lenker.
         own_rules = {"shell", "read_file", "list_dir", "search_files", "write_file", "edit_file"}  # har egne, strengere regler
-        if call.name not in actions.GENERATED and call.name not in own_rules and key in self.session_allow \
-                and appr.needed and not appr.danger and not appr.reject:
+        # MCP etter innhold utenfra: ingen «alltid» (mcp_client.McpHub.approval spør på nytt hver gang)
+        mcp_tainted = call.name.startswith("mcp_") and self.web_tainted
+        if call.name not in actions.GENERATED and call.name not in own_rules and self.allowed(key) \
+                and not mcp_tainted and appr.needed and not appr.danger and not appr.reject:
             appr.needed = False
         # Sjekkes etter «alltid»: når innhold fra nettet er lest, spør vi uansett hva som er godkjent tidligere.
         if self.web_tainted and not appr.needed and not appr.reject and key in OUTBOUND_AFTER_WEB:
@@ -591,6 +603,10 @@ class Toolbox:
     def _approval(self, call: ToolCall) -> Approval:
         a = call.args
         name = call.name
+        if name.startswith("mcp_"):  # verktøy fra en MCP-server (olympus.mcp_client): risikoen bestemmer kortet
+            if self.mcp is None:
+                return Approval(False, reject=f"Ukjent verktøy: {name}")
+            return self.mcp.approval(name, a, self.cloud, self.session_allow, tainted=self.web_tainted)
         if name not in SPECS:
             return Approval(False)
         from olympus import actions
@@ -601,7 +617,7 @@ class Toolbox:
             # og sider godkjennes, så private data ikke kan lekke ut gjennom søkeord eller lenker
             # «Godkjenn alltid i denne samtalen» gjelder akkurat denne handlingen (plan:add, ikke all plan), aldri
             # røde kall – og lenker serveren skal kontakte, spør fortsatt (enforce_egress under)
-            if f"{name}:{a.get('action') or ''}" in self.session_allow and appr.needed and not appr.danger and not appr.reject:
+            if self.allowed(f"{name}:{a.get('action') or ''}") and appr.needed and not appr.danger and not appr.reject:
                 appr.needed = False
             # Etter innhold fra nettet gjelder ikke «alltid»: et lurt søk kunne ellers lekke private data uten spørsmål
             if name == "web" and self.web_tainted and not appr.needed:
@@ -619,7 +635,7 @@ class Toolbox:
         if name in ("library_search", "library_read", "memory", "media_search"):
             return Approval(False)  # lokalt bibliotek/minne, ingenting forlater maskinen
         if name == "session_search":
-            if self.cloud and name not in self.session_allow:
+            if self.cloud and not self.allowed(name):
                 # Utdrag fra tidligere (også helt lokale) samtaler ville blitt sendt til skyen: spør først.
                 return Approval(True, "Søk i tidligere samtaler – utdragene sendes til skyen", preview=str(a.get("query", "")))
             return Approval(False)
@@ -717,7 +733,7 @@ class Toolbox:
             if self.cloud and is_sensitive(p):
                 return Approval(True, f"Les {self.short(p)}: ser ut som hemmeligheter/nøkler (sendes til skyen)",
                                 danger=True, preview=str(p))
-            if self.cloud and not self._inside(p) and name not in self.session_allow:
+            if self.cloud and not self._inside(p) and not self.allowed(name):
                 return Approval(True, f"Les {self.short(p)} utenfor arbeidsmappen (innholdet sendes til skyen)", preview=str(p))
             return Approval(False)
         if name == "shell":
@@ -777,6 +793,15 @@ class Toolbox:
     async def run(self, call: ToolCall) -> ToolResult:
         from olympus import actions
 
+        if call.name.startswith("mcp_") and self.mcp is not None:
+            if call.arguments and call.arguments.strip() not in ("{}", "null") and not call.args:
+                return ToolResult(False, f"Ugyldige argumenter (ikke JSON-objekt): {call.arguments[:200]}", "ugyldige argumenter")
+            result = await self.mcp.call(call.name, call.args, self.mcp_notice)
+            if self.mcp.taints(call.name) and not result.output.startswith("Ukjent MCP"):
+                # Serverens tekst (også feil) er nå i konteksten: med mindre verktøyet er merket rent
+                # (openWorldHint=false, ikke sensitivt, ikke filer/varsler/utklipp/nett) regnes den som utenfra
+                self.web_tainted = True
+            return result
         if call.name in actions.GENERATED:
             if call.arguments and call.arguments.strip() not in ("{}", "null") and not call.args:
                 return ToolResult(False, f"Ugyldige argumenter (ikke JSON-objekt): {call.arguments[:200]}", "ugyldige argumenter")

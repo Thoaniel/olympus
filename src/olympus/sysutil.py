@@ -70,8 +70,11 @@ def install_service() -> str:
     if SYSTEM == "Linux":
         unit = Path.home() / ".config" / "systemd" / "user" / "olympus-web.service"
         unit.parent.mkdir(parents=True, exist_ok=True)
-        unit.write_text("[Unit]\nDescription=Olympus (Zeus)\nAfter=network-online.target\n\n[Service]\n"
-                        f"ExecStart={' '.join(cmd)}\nRestart=on-failure\n\n[Install]\nWantedBy=default.target\n")
+        # Always running: the desktop (Olymparch's bar, the phone) talks to it and never starts it by itself.
+        # Restarted after any exit, also a clean one, and never given up on (no start limit).
+        unit.write_text("[Unit]\nDescription=Olympus (Zeus)\nAfter=network-online.target\nStartLimitIntervalSec=0\n\n"
+                        f"[Service]\nExecStart={' '.join(cmd)}\nRestart=always\nRestartSec=3\n\n"
+                        "[Install]\nWantedBy=default.target\n")
         subprocess.run(["systemctl", "--user", "daemon-reload"], check=False)
         subprocess.run(["systemctl", "--user", "enable", "--now", "olympus-web"], check=False)
         return f"systemd-tjeneste: {unit} (systemctl --user status olympus-web)"

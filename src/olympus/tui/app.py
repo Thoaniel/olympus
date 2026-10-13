@@ -1302,6 +1302,10 @@ class OlympusApp(App):
     async def on_unmount(self) -> None:
         if self.brain is not None:
             await self.brain.close()
+        import contextlib
+
+        with contextlib.suppress(Exception):  # lokal hjerne: MCP-serverne den startet stoppes
+            await self.orch.close()
         self.manager.shutdown()
 
 

@@ -13,6 +13,15 @@ GiB = 1024**3
 DRM = Path("/sys/class/drm")
 
 
+def gaming() -> bool:
+    """Olymparchs spillmodus: flagget finnes nøyaktig mens et spill kjører (eller spillmodus er slått på for hånd).
+    Da får spillet GPU-en: den lokale modellen frigjøres og lastes ikke før spillet er ferdig. Skymodeller virker."""
+    import os
+
+    run = os.environ.get("XDG_RUNTIME_DIR")  # din egen (0700); aldri /tmp, der andre kunne lagt flagget
+    return bool(run) and (Path(run) / "olymparch" / "gaming").exists()
+
+
 @dataclass(frozen=True)
 class VramInfo:
     card: str

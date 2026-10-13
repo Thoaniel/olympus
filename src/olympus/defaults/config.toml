@@ -4,6 +4,11 @@
 
 [general]
 local_model = "gemma4-26b-a4b"    # «tilbake til lokalt» (/modell lokal) og reserven når en skymodell ikke svarer
+# Reservekjeden: når en skymodell svarer 429 (kvote), er nede eller nettet svikter, fortsetter neste i lista med det
+# som allerede er gjort (baren viser hvem som svarte). Bare de du har koblet til (nøkkel/CLI) brukes; «lokal» er
+# local_model og står alltid sist.
+fallback = ["groq/openai/gpt-oss-120b", "gemini/gemini-flash-latest", "mistral/mistral-small-latest",
+            "openrouter/nvidia/nemotron-3-super-120b-a12b:free", "lokal"]
 startup_animation = true
 read_project_context = true   # les AGENTS.md / OLYMPUS.md i aktiv mappe
 
@@ -88,6 +93,28 @@ shell_timeout = 120     # sekunder
 quota_wait = 10         # vent opptil så mange sekunder når en gratisprovider ber om det (429)
 cloud_read_lines = 120  # read_file leser færre linjer om gangen for gratis skymodeller (tokenkvote)
 
+[mcp]
+# MCP-klient: Zeus kan bruke verktøy fra lokale MCP-servere (stdio). Serverne startes først når de trengs og
+# stoppes når Olympus avslutter. Verktøyene heter mcp_<server>_<verktøy>. Status: `olympus config mcp` / `olympus doctor`.
+enabled = true
+autodetect = true          # /usr/bin/olymparch-mcp blir server «olymparch» (slå av: [mcp.servers.olymparch] enabled = false)
+max_tools = 8              # maks MCP-verktøy per runde – bare når meldingen handler om PC-en (holder konteksten liten)
+always = []                # verktøy som alltid tilbys: "server/verktøy", f.eks. ["olymparch/settings_get"]
+read_timeout = 30          # sekunder for lesende verktøy
+call_timeout = 300         # sekunder for endringer: lenge nok til at du rekker å godkjenne i skrivebordet
+desktop_notice_after = 1.5 # sekunder uten svar på en endring før chatten viser «venter på godkjenning i skrivebordet»
+start_timeout = 20
+restart_backoff = 1.0      # første pause etter krasj; dobles for hvert nytt krasj (maks 60 s)
+max_result_chars = 6000    # resultatet kuttes til så mange tegn før det går til modellen
+# Egne servere:
+# [mcp.servers.eksempel]
+# command = "/usr/bin/min-mcp-server"
+# args = ["--stdio"]
+# env = { NOKKEL = "verdi" }
+# enabled = true
+# keywords = ["ord", "som gjør serveren aktuell"]   # ellers: når meldingen nevner verktøynavnene
+# always = ["verktøy"]                              # tilbys i hver runde
+
 # ---- Modeller ----
 # kind = "llm" (llama.cpp/GGUF). Alle nedlastede språkmodeller kan velges med /modell.
 [models.gemma4-26b-a4b]
@@ -161,9 +188,14 @@ temperature = 0.2
 # may_train = true: gratisnivået kan bruke det du sender til å trene modeller.
 # models = skymodellene /modell viser; flere hentes fra provideren når du åpner valget.
 # Nøkler legges inn i TUI-en (⚙ Sky-modeller) og lagres i ~/.olympus/auth.json (rettighet 600).
+# Én provider = én blokk her (data, ingen kode): type openai (OpenAI-kompatibelt API med nøkkel) eller en CLI med
+# abonnement (claude-code, codex). env = miljøvariabelen nøkkelen gis under; login / login_status = CLI-ens egne
+# kommandoer for innlogging og for å sjekke den (exit 0 = innlogget). Nøkler: olymparch-keys på Olymparch. Gratisnivåene ble sjekket mot leverandørenes egne sider 2026-10-14; uten kort:
+# Groq, Gemini, Mistral, OpenRouter (:free). Lagt ned eller krever kort: GitHub Models, Cerebras, Together, Hugging Face.
 
 [providers.groq]
 type = "openai"
+env = "GROQ_API_KEY"            # navnet agentene får nøkkelen under (olymparch-agent)
 label = "Groq"
 base_url = "https://api.groq.com/openai/v1"
 cost = "gratisnivå"
@@ -174,36 +206,66 @@ models = ["openai/gpt-oss-120b", "openai/gpt-oss-20b"]
 
 [providers.openrouter]
 type = "openai"
+env = "OPENROUTER_API_KEY"            # navnet agentene får nøkkelen under (olymparch-agent)
 label = "OpenRouter"
 base_url = "https://openrouter.ai/api/v1"
 model_filter = ":free"
 cost = "gratisnivå"
 may_train = true
 signup = "https://openrouter.ai/settings/keys"
-note = "Bare :free-modeller vises. 20/min og 50/dag uten kjøp. Noen gratisverter kan trene på data; slå det av under Settings → Privacy."
+note = "Bare :free-modeller vises. 20/min og 50/dag uten kjøp (1 000/dag etter ett kjøp på 10 dollar). Noen gratisverter kan trene på data; slå det av under Settings → Privacy."
 context = 131072
+models = ["nvidia/nemotron-3-super-120b-a12b:free"]   # gratislista endrer seg ofte; flere hentes når du åpner valget
+
+[providers.mistral]
+type = "openai"
+env = "MISTRAL_API_KEY"            # navnet agentene får nøkkelen under (olymparch-agent)
+label = "Mistral"
+base_url = "https://api.mistral.ai/v1"
+cost = "gratisnivå"
+may_train = true
+signup = "https://console.mistral.ai"
+note = "Gratis uten kort (Experiment), lave grenser. Drives i EU. Gratisnivået kan trene på data: slå av «Anonymous improvement data» under Admin → Privacy."
+context = 131072
+models = ["mistral-small-latest", "mistral-medium-latest"]
 
 [providers.gemini]
 type = "openai"
+env = "GEMINI_API_KEY"            # navnet agentene får nøkkelen under (olymparch-agent)
 label = "Google Gemini"
 base_url = "https://generativelanguage.googleapis.com/v1beta/openai"
 cost = "gratisnivå"
 may_train = true
 signup = "https://aistudio.google.com/apikey"
-note = "Gratisnivå uten kort, men lave dagskvoter på nyere modeller. Google kan bruke data fra gratisnivået til å forbedre tjenestene."
+note = "Gratisnivå med lave dagskvoter (se AI Studio). I EØS (Norge), Sveits og Storbritannia gjelder vilkårene for betalt bruk også gratisnivået, så det du sender brukes ikke til trening der; ellers kan Google bruke det."
 context = 1000000
-models = ["gemini-flash-latest"]
+models = ["gemini-flash-latest", "gemini-3.8-flash"]
 
 [providers.claude-code]
 type = "claude-code"     # den offisielle `claude`-CLI-en; bruker abonnementet du allerede har
 label = "Claude Code"
 binary = "claude"
+login_status = ["claude", "auth", "status"]   # exit 0 = logget inn (code.claude.com/docs/en/cli-reference)
+login = ["claude", "auth", "login"]
 cost = "betalt · abonnement"
 note = "Betalt assistent: bruker Claude-abonnementet ditt via `claude -p`. Ingen ekstra kostnad per melding, men krever abonnement."
 read_tools = true        # Claude kan lese filer i arbeidsmappen (Read/Glob/Grep), ikke endre
 effort = ""
 context = 1000000
 models = ["opus", "sonnet", "haiku"]
+
+[providers.codex]
+type = "codex"           # OpenAI Codex CLI (`codex exec`): bruker ChatGPT-abonnementet du allerede har
+label = "Codex"
+binary = "codex"
+login_status = ["codex", "login", "status"]   # exit 0 når innlogget
+login = ["codex", "login"]
+cost = "betalt · abonnement"
+signup = "https://learn.chatgpt.com/docs/developer-commands?surface=cli"
+note = "Betalt assistent: bruker ChatGPT-abonnementet ditt via `codex exec` (logg inn med `codex login`). Kjøres skrivebeskyttet i en egen mappe; Olympus' verktøy går via Olympus' godkjenning."
+effort = ""
+context = 400000
+models = ["gpt-6.1-sol", "gpt-6-sol", "gpt-6-luna"]   # learn.chatgpt.com/docs/models (2026-10-14): Luna også på Free/Go
 
 [providers.anthropic]
 type = "anthropic"       # betalt per token; vises ikke i modellvalget

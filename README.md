@@ -173,6 +173,7 @@ flowchart LR
 | `tools.py`, `actions.py` | The tools and their approval rules (stricter with a cloud model) |
 | `model_manager.py` | Starts and stops `llama-server`, keeps within the VRAM budget, unloads when idle |
 | `providers.py` | Local, OpenAI-compatible, Anthropic and Claude Code backends, with fallback |
+| `mcp_client.py`, `mcp_bridge.py` | MCP client for local stdio servers (olymparch-mcp), and the reverse bridge for Claude Code |
 | `medialib.py`, `cast.py` | Media library, e-book text, TV discovery and casting |
 | `lab.py` | Calendar, paired devices and settings (SQLite) |
 | `tui/` | Textual apps: the dashboard, `olympus zeus` and `olympus status` |
@@ -206,6 +207,45 @@ All your data lives in `~/.olympus/` (set `OLYMPUS_HOME` to move it):
 By default, media folders are found automatically (`~/Music`, `~/Videos/Movies`, `~/Videos/TV`, `~/Audiobooks`,
 `~/Books` and their localized variants). To use your own paths, set `media_server.music_dir` and the other
 `*_dir` keys.
+
+### MCP servers (tools from your desktop)
+
+Zeus can use tools from local MCP servers over stdio, with local and cloud models alike. If
+`/usr/bin/olymparch-mcp` exists (the Olymparch OS server: settings, themes,
+windows, apps, media, notifications, packages), it is picked up automatically as the server `olymparch`. Other
+servers go in `config.toml`:
+
+```toml
+[mcp.servers.myserver]
+command = "/usr/bin/my-mcp-server"
+args = ["--stdio"]
+env = { KEY = "value" }
+enabled = true
+keywords = ["words", "that make it relevant"]   # optional
+always = ["tool_name"]                          # optional: offered every turn
+
+[mcp.servers.olymparch]
+enabled = false                                 # turn off the auto-detected OS server
+```
+
+- Servers start the first time they are needed and stay up while Olympus runs. A crashed server is restarted on
+  next use, with a growing pause (1, 2, 4 … 60 s). They are stopped when Olympus exits.
+- Tools appear to the model as `mcp_<server>_<tool>`. To keep local models' context small, at most
+  `mcp.max_tools` (8) are offered per turn, and only when your message is about the PC (or the tool is listed in
+  `always`). They are added after Olympus' own tools, so the cached prompt prefix stays the same.
+- Approval follows the server's tool annotations (`readOnlyHint`, `destructiveHint`) or a `risk` field
+  (`read` / `change` / `sensitive`), whichever is stricter. Read tools run without asking (with a cloud model, Zeus
+  asks first because the result leaves the PC). Changes need a yes; sensitive tools need a yes every time. The OS
+  server may show its own approval card on the desktop as well. Olympus then waits (up to `mcp.call_timeout`,
+  300 s) and the chat shows "Venter på godkjenning i skrivebordet".
+- Text from a server (titles, results, errors, progress) is shown escaped and in quotes, never as Olympus' own
+  text. The approval card's title and risk come from Olympus. Results are passed to the model marked as data.
+- Taint: once a result from outside has entered the conversation, approval gets stricter for the rest of that
+  conversation, even after it is saved and reopened. A result counts as outside unless the tool is marked
+  `openWorldHint: false`, isn't sensitive and doesn't read files, notifications, the clipboard or the web.
+  From then on every MCP change needs a new yes, read tools not marked clean ask too, outgoing tools ask, and
+  "always" no longer applies with a cloud model. Cloud models only ever see "ok"/"failed" for past MCP calls.
+- `olympus config mcp` and `olympus doctor` show each server and whether it answers.
 
 ## Language
 

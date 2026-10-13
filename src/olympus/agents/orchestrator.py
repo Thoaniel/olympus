@@ -118,15 +118,31 @@ class Orchestrator:
         self.toolbox.memory = self.memory
         self.toolbox.sessions = SessionIndex(SessionStore(self.config.path("sessions_dir")))
         self.last_model: str | None = None  # modellen som svarte sist (for kostnadspanelet)
+        # MCP-klienten: verktøy fra lokale MCP-servere (olymparch-mcp m.fl.). Serverne startes først når de trengs.
+        from olympus.mcp_client import McpHub
+
+        self.mcp = McpHub(self.config)
+        self.toolbox.mcp = self.mcp
+        self.turn_mcp: list[str] = []  # MCP-verktøyene som tilbys i denne runden
         self.session_tokens: dict[str, int] = {}  # tokens i økta per kostnadsklasse (gratis, betalt …)
+
+    def tainted(self) -> bool:
+        """Har samtalen fått inn innhold utenfra (nettside, søk, MCP-resultat)? Da gjelder strengere godkjenning
+        resten av samtalen (olympus.tools.Toolbox.approval)."""
+        return any(m.get("_tainted") for m in self.messages)
 
     def reset(self) -> None:
         self.messages.clear()
+        self.toolbox.web_tainted = False
         self.last_usage = {}
         self.last_model = None
         self.session_tokens = {}
         self.memory_snapshot = self.memory.snapshot()  # ny økt: nytt øyeblikksbilde av minnet
         self.toolbox.session_allow.clear()
+
+    async def close(self) -> None:
+        """Stopp det orkestratoren har startet selv (MCP-serverne). Modellene stoppes av ModelManager."""
+        await self.mcp.close()
 
     def tool_names(self, agent: str, model_id: str) -> list[str]:
         if not self.config.get("tools.enabled", True) or not self.backends.supports_tools(model_id):
@@ -173,13 +189,25 @@ class Orchestrator:
         self.turn_denied: set[tuple[str, str]] = set()  # (verktøy, handling) brukeren har sagt nei til i denne runden
         self.turn_denials = 0
         self._batch_yes, self._batch_no = {}, set()
-        self.toolbox.web_tainted = False  # ny runde: ingen nettside lest ennå
+        # Innhold utenfra (nettet, MCP) gjelder hele samtalen – også etter lagring/åpning av økta (_tainted i historikken)
+        self.toolbox.web_tainted = self.tainted()
         try:
             spec = self.config.agent(agent)
             model_id, why = self.backends.resolve(agent)
             if why:
                 yield Event("notice", agent=agent, text=f"{spec['display']} bruker {model_id} fordi {why}.")
             payload = self._payload(agent, text, model_id)
+            self.turn_mcp = []
+            if self.mcp.enabled and self.tool_names(agent, model_id):
+                # Bare noen få MCP-verktøy per runde: når meldingen handler om PC-en, eller de står i «always»
+                self.turn_mcp, notes = await self.mcp.select(text)
+                for note in notes:
+                    yield Event("notice", agent=agent, text=note)
+                if self.turn_mcp and payload[-1]["role"] == "user":
+                    servers = sorted({t.server for n in self.turn_mcp if (t := self.mcp.get(n))})
+                    payload[-1] = {**payload[-1], "content": payload[-1]["content"] + (
+                        f"\n\n(PC-verktøy fra {', '.join(servers)} er med denne gangen (mcp_*): bruk dem for "
+                        "innstillinger, vinduer, apper, varsler og pakker i stedet for shell.)")}
             attempt, answer = 0, ""
             while True:
                 self.active_agent = agent
@@ -270,8 +298,10 @@ class Orchestrator:
         summary = (summary or "").strip()
         if not summary:
             return
+        was_tainted = any(m.get("_tainted") for m in middle)
         self.messages[first_n:-last_n] = [
-            {"role": "user", "content": f"[Sammendrag av {len(middle)} tidligere meldinger i samtalen]\n{summary}"},
+            {"role": "user", "content": f"[Sammendrag av {len(middle)} tidligere meldinger i samtalen]\n{summary}",
+             **({"_tainted": True} if was_tainted else {})},
             {"role": "assistant", "content": "Notert – jeg har sammendraget av det vi har snakket om."},
         ]
         after = self.history_tokens()
@@ -317,6 +347,8 @@ class Orchestrator:
                     pass
                 # Etter to nei i samme runde: ingen flere verktøy – svar brukeren (ellers spurte modellen 20+ ganger)
                 tools = self.toolbox.specs(names) if names and step < max_steps and self.turn_denials < 2 else None
+                if tools and self.turn_mcp:  # sist: starten av prompten (Olympus' verktøy) er den samme hver gang
+                    tools += self.mcp.specs(self.turn_mcp)
                 pending: dict[int, dict[str, str]] = {}
                 round_text: list[str] = []
                 # Tak på svarlengden for lokale modeller: en modell i løkke (9B gjorde det i testen) skal ikke kunne
@@ -405,7 +437,13 @@ class Orchestrator:
                     self.turn_denials += 1
                     continue
                 yield Event("tool_call", agent=agent, call=call)
-                result = await self._run_tool(call, approve)
+                result = None
+                async for item in self._run_tool_with_notices(call, approve, agent):
+                    if isinstance(item, Event):
+                        yield item
+                    else:
+                        result = item
+                assert result is not None
                 if result.denied:
                     self.turn_denied.add(key)
                     self.turn_denials += 1
@@ -464,7 +502,13 @@ class Orchestrator:
                 return ("Brukeren har allerede sagt nei i denne runden. Ikke bruk flere verktøy – skriv et kort svar "
                         "til brukeren om at det ikke ble gjort.", True)
             emit(Event("tool_call", agent=agent, call=call))
-            result = await self._run_tool(call, approve)
+            result = None
+            async for item in self._run_tool_with_notices(call, approve, agent):
+                if isinstance(item, Event):
+                    emit(item)
+                else:
+                    result = item
+            assert result is not None
             if result.denied:
                 self.turn_denied.add(key)
                 self.turn_denials += 1
@@ -499,6 +543,35 @@ class Orchestrator:
             self._batch_no = {id(c) for c, _ in ask}
             self.turn_denials += 1
             self.turn_denied.update((c.name, str(c.args.get("action") or "")) for c, _ in ask)
+
+    async def _run_tool_with_notices(self, call: ToolCall, approve: Approver | None, agent: str):
+        """Som _run_tool, men et MCP-kall kan sende meldinger til chatten mens det pågår («venter på godkjenning i
+        skrivebordet» når OS-serveren viser sitt eget kort). Gir Event-er underveis og til slutt ToolResult."""
+        import asyncio
+
+        if not call.name.startswith("mcp_"):
+            yield await self._run_tool(call, approve)
+            return
+        side: asyncio.Queue[str] = asyncio.Queue()
+        self.toolbox.mcp_notice = side.put_nowait
+        task = asyncio.ensure_future(self._run_tool(call, approve))
+        try:
+            while True:
+                getter = asyncio.ensure_future(side.get())
+                await asyncio.wait({task, getter}, return_when=asyncio.FIRST_COMPLETED)
+                if getter.done():
+                    yield Event("notice", agent=agent, text=getter.result())
+                else:
+                    getter.cancel()
+                if task.done():
+                    break
+            while not side.empty():
+                yield Event("notice", agent=agent, text=side.get_nowait())
+        finally:
+            self.toolbox.mcp_notice = None
+            if not task.done():
+                task.cancel()  # avbrutt: kallet avbrytes også (serveren får notifications/cancelled)
+        yield task.result()
 
     async def _run_tool(self, call: ToolCall, approve: Approver | None) -> ToolResult:
         approval = self.toolbox.approval(call)
@@ -538,9 +611,17 @@ class Orchestrator:
                  if call.name in HISTORY_ARG_TOOLS else
                  {k: v for k, v in call.args.items() if k == "action" and isinstance(v, str)})
         excerpt = redact(output.strip())[:400]
-        self.turn_tools.append({"id": call.id, "name": call.name, "args": json.dumps(full, ensure_ascii=False)[:600],
-                                "brief_args": json.dumps(brief, ensure_ascii=False)[:500], "outcome": outcome,
-                                "excerpt": excerpt, "action": str(call.args.get("action") or "")})
+        entry = {"id": call.id, "name": call.name, "args": json.dumps(full, ensure_ascii=False)[:600],
+                 "brief_args": json.dumps(brief, ensure_ascii=False)[:500], "outcome": outcome,
+                 "excerpt": excerpt, "action": str(call.args.get("action") or "")}
+        if call.name.startswith("mcp_"):  # MCP: serverens risiko sier om kallet endret noe (dommeren, is_write)
+            t = self.mcp.get(call.name)
+            entry["writes"] = t is None or t.risk != "read"
+            # Til skyen går bare «ok»/«feilet» – aldri serverens tekst – også i senere runder (for_model); utdraget
+            # (_local) får bare lokale modeller
+            entry["excerpt"] = (outcome.split(":", 1)[1].strip() + "\n" + excerpt).strip() if ":" in outcome else excerpt
+            entry["outcome"] = outcome.split(":", 1)[0]
+        self.turn_tools.append(entry)
 
     def _payload(self, agent: str, original: str, model_id: str = "") -> list[dict[str, Any]]:
         history = self.messages[:-1]  # siste er brukermeldingen for denne runden
@@ -624,7 +705,8 @@ class Orchestrator:
                     if NO_TOOLS_NOTE not in m["content"]:
                         m["content"] += NO_TOOLS_NOTE
                     break
-        self.messages.append({"role": "assistant", "content": text})
+        self.messages.append({"role": "assistant", "content": text,
+                              **({"_tainted": True} if self.toolbox.web_tainted else {})})
 
 
 HISTORY_ARG_TOOLS = {"plan", "playlist", "media_search", "media_find", "audio", "downloads", "media", "pc", "model"}
@@ -675,6 +757,8 @@ def is_write(t: dict[str, Any]) -> bool:
         except ValueError:
             action = None
     action = action or None
+    if t["name"].startswith("mcp_"):
+        return bool(t.get("writes", True))
     from olympus import actions
 
     if t["name"] in actions.GENERATED:  # registeret vet hva som endrer noe (pc play, media edit …)

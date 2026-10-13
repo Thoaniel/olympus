@@ -137,7 +137,7 @@ def run(config: cfg.Config) -> int:
             print(f"✓ Zeus bruker {mid}")
     elif not mid:
         print("· Ingen modell får plass i GPU-minnet – bruk en skymodell («olympus modell») eller en mindre modell.")
-    if input("Start Olympus automatisk ved innlogging? [J/n] ").strip().lower() in ("", "j", "y", "ja", "yes"):
-        print("✓ " + install_service())
-    print("\nFerdig. Start: «olympus» (terminal) eller «olympus web» (server + app). Par telefonen: «olympus pair».")
+    # The server always runs in the background (a systemd --user service); the desktop and the phone talk to it
+    print("✓ " + install_service())
+    print("\nFerdig. Olympus kjører i bakgrunnen. Terminal: «olympus». Par telefonen: «olympus pair».")
     return 0

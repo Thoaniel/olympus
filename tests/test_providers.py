@@ -1,4 +1,5 @@
 import json
+import os
 import sys
 import threading
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -11,6 +12,7 @@ from olympus.model_manager import ModelManager
 from olympus.providers import AnthropicBackend, Backends, ClaudeCodeBackend, parse_ref
 
 FAKE_CLAUDE = Path(__file__).parent / "fake_claude.py"
+FAKE_CODEX = Path(__file__).parent / "fake_codex.py"
 
 
 @pytest.fixture
@@ -399,3 +401,164 @@ async def test_mcp_bridge_requires_token_and_keeps_it_out_of_argv():
     finally:
         await mcp.stop()
     assert not os.path.exists(conf_path)  # fila med nøkkelen er borte etter svaret
+
+
+def test_fallback_chain_order_and_local_last(fake_config, monkeypatch):
+    """general.fallback er kjeden i rekkefølge; «lokal» er den lokale modellen og står alltid sist."""
+    from olympus.providers import save_auth
+
+    monkeypatch.setattr("olympus.providers.find_binary", lambda name: None)
+    b = Backends(fake_config, ModelManager(fake_config))
+    fake_config.data["general"]["fallback"] = ["lokal", "groq/openai/gpt-oss-120b", "gemini/gemini-flash-latest"]
+    assert b.fallbacks() == ["groq/openai/gpt-oss-120b", "gemini/gemini-flash-latest", "qwen35-9b"]
+    fake_config.data["general"]["fallback"] = []
+    assert b.fallbacks() == ["qwen35-9b"]  # uten kjede: den lokale, som før
+    fake_config.data["general"]["fallback"] = ["groq/openai/gpt-oss-120b", "lokal"]
+    info = b.fallback_info()
+    assert [i["id"] for i in info] == ["groq/openai/gpt-oss-120b", "qwen35-9b"]
+    assert info[0]["cloud"] and not info[0]["available"] and "Groq" in info[0]["why"]
+    save_auth(fake_config, "groq", "gsk-test")
+    assert b.fallback_info()[0]["available"]
+    # valgt Groq er utilgjengelig uten nøkkel: neste i kjeden som kan brukes
+    fake_config.data["agents"]["zeus"]["model"] = "gemini/gemini-flash-latest"
+    ref, why = b.resolve("zeus")
+    assert ref == "groq/openai/gpt-oss-120b" and "Gemini" in why
+
+
+@pytest.fixture
+def codex_bin(tmp_path, monkeypatch):
+    log = tmp_path / "codex.log"
+    wrapper = tmp_path / "codex"
+    wrapper.write_text(f"#!/bin/sh\nexec {sys.executable} {FAKE_CODEX} \"$@\"\n")
+    wrapper.chmod(0o755)
+    monkeypatch.setenv("FAKE_CODEX_LOG", str(log))
+    return wrapper, log
+
+
+@pytest.mark.asyncio
+async def test_codex_streams_read_only_without_user_config(codex_bin, tmp_path):
+    from olympus.providers import CodexBackend
+
+    wrapper, log = codex_bin
+    b = CodexBackend(binary=str(wrapper), model="gpt-6-luna", workdir=tmp_path / "cx")
+    msgs = [{"role": "system", "content": "Du er Zeus"}, {"role": "user", "content": "første"},
+            {"role": "assistant", "content": "svar"}, {"role": "user", "content": "andre melding"}]
+    chunks = [c async for c in b.stream_chat(msgs)]
+    assert "".join(c.text for c in chunks if c.kind == "content") == "[codex:gpt-6-luna] andre melding"  # item.updated + completed
+    assert [c for c in chunks if c.kind == "usage"][0].usage["total_tokens"] == 25
+    call = json.loads(log.read_text().splitlines()[-1])
+    argv = call["argv"]
+    assert argv[argv.index("--sandbox") + 1] == "read-only"
+    # Codex' own tools are off: its shell could read any file and send it to the cloud without Olympus asking
+    for off in ("features.shell_tool=false", "features.unified_exec=false", 'web_search="disabled"', "tools.view_image=false"):
+        assert off in argv
+    for flag in ("--ephemeral", "--ignore-user-config", "--skip-git-repo-check"):
+        assert flag in argv
+    assert argv[argv.index("--cd") + 1] == str(tmp_path / "cx") and call["cwd"] == str(tmp_path / "cx")
+    assert "Tidligere i samtalen" not in " ".join(argv) and "Du er Zeus" not in " ".join(argv)  # alt på stdin
+
+
+@pytest.mark.asyncio
+async def test_codex_uses_olympus_tools_via_mcp_token_in_env(fake_config, codex_bin, tmp_path):
+    from olympus.lab import Lab
+
+    wrapper, log = codex_bin
+    fake_config.data["providers"]["codex"]["binary"] = str(wrapper)
+    fake_config.data["agents"]["zeus"]["model"] = "codex/gpt-6-luna"
+    manager = ModelManager(fake_config)
+    o = Orchestrator(fake_config, manager)
+    o.toolbox.lab = Lab(tmp_path / "lab.db")
+    o.toolbox.undo_instead = False
+    asked = []
+
+    async def approve(call, approval):
+        asked.append(call.name)
+        return "yes"
+
+    try:
+        evs = [e async for e in o.run('VERKTØY: plan {"action": "add", "title": "Tannlege", "start": "2026-10-16T10:00"}',
+                                      approve=approve)]
+        assert asked == ["plan"] and o.toolbox.lab.events()[0]["title"] == "Tannlege"
+        text = "".join(e.chunk.text for e in evs if e.kind == "chunk" and e.chunk.kind == "content")
+        assert "La til" in text and "FEIL" not in text
+        call = json.loads(log.read_text().splitlines()[-1])
+        assert len(call["token"]) > 20                                     # nøkkelen kom i miljøet …
+        assert call["token"] not in " ".join(call["argv"])                 # … aldri i argv
+        assert 'mcp_servers.olympus.default_tools_approval_mode="approve"' in call["argv"]   # Olympus spør selv
+    finally:
+        manager.shutdown()
+
+
+@pytest.mark.asyncio
+async def test_fallback_chain_moves_on_to_the_next_cloud_on_quota(fake_config, codex_bin, claude_bin):
+    """Rate limit hos den valgte: neste i general.fallback svarer, og den nye modellen meldes (agent_start)."""
+    wrapper, _ = codex_bin
+    cwrapper, _ = claude_bin
+    fake_config.data["providers"]["codex"]["binary"] = str(wrapper)
+    fake_config.data["providers"]["claude-code"]["binary"] = str(cwrapper)
+    fake_config.data["agents"]["zeus"]["model"] = "codex/gpt-6-luna"
+    fake_config.data["general"]["fallback"] = ["claude-code/opus", "lokal"]
+    manager = ModelManager(fake_config)
+    o = Orchestrator(fake_config, manager)
+    try:
+        evs = [e async for e in o.run("KVOTE: hei")]
+        notices = [e.text for e in evs if e.kind == "notice"]
+        assert any("Bytter til skymodell claude-code/opus" in n for n in notices), notices
+        assert [e.model for e in evs if e.kind == "agent_start"][-1] == "claude-code/opus"
+        text = "".join(e.chunk.text for e in evs if e.kind == "chunk" and e.chunk.kind == "content")
+        assert text.startswith("[claude:opus]")
+    finally:
+        manager.shutdown()
+
+
+def test_services_status_and_olymparch_keys(fake_config, tmp_path, monkeypatch, claude_bin):
+    """Innstillinger → Tjenester: status per leverandør; nøkler fra Olymparchs nøkkellager, aldri ut i lista."""
+    from olympus import providers as P
+
+    keys = tmp_path / "bin"
+    keys.mkdir()
+    (keys / "olymparch-keys").write_text('#!/bin/sh\n[ "$1" = get ] && [ "$2" = mistral ] && { printf "mk-secret"; exit 0; }\nexit 1\n')
+    (keys / "olymparch-keys").chmod(0o755)
+    monkeypatch.setenv("PATH", f"{keys}:{os.environ['PATH']}")
+    P._OLYMPARCH_KEYS.clear()
+    wrapper, _ = claude_bin
+    fake_config.data["providers"]["claude-code"]["binary"] = str(wrapper)
+    fake_config.data["providers"]["claude-code"]["login_status"] = ["claude", "auth", "status"]
+    fake_config.data["providers"].setdefault("mistral", {"type": "openai", "label": "Mistral", "cost": "gratisnivå",
+                                                        "base_url": "https://api.mistral.ai/v1"})
+    b = Backends(fake_config, ModelManager(fake_config))
+    assert b.api_key("mistral") == "mk-secret"   # fra olymparch-keys
+    s = {i["id"]: i for i in b.services()}
+    assert s["mistral"]["status"] == "ready" and s["mistral"]["free"]
+    assert s["groq"]["status"] == "missing_key" and s["groq"]["signup"].startswith("https://")
+    assert s["claude-code"]["status"] == "not_logged_in" and s["claude-code"]["subscription"]  # falsk claude: exit 1
+    assert "mk-secret" not in json.dumps(list(s.values()))
+    assert P.olymparch_key("../etc") is None   # bare gyldige navn sendes videre
+
+
+def test_game_mode_turns_local_ai_off(fake_config, tmp_path):
+    """Olymparchs spillmodus: mens flagget finnes er den lokale modellen ikke tilgjengelig og lastes ikke."""
+    import asyncio
+    import os
+
+    from olympus.model_manager import VramError
+
+    b = Backends(fake_config, ModelManager(fake_config))
+    assert b.available("qwen35-9b")[0]
+    flag = Path(os.environ["XDG_RUNTIME_DIR"]) / "olymparch" / "gaming"
+    flag.parent.mkdir(parents=True)
+    flag.touch()
+    ok, why = b.available("qwen35-9b")
+    assert not ok and "spillmodus" in why
+    with pytest.raises(VramError, match="Spillmodus"):
+        asyncio.run(b.manager.ensure("qwen35-9b"))
+    flag.unlink()
+    assert b.available("qwen35-9b")[0]
+
+
+def test_missing_draft_drops_speculative_args(fake_config):
+    """En modell med MTP-draft som ikke er lastet ned skal starte uten --spec-type, ikke krasje."""
+    fake_config.data.setdefault("models", {})["qwen35-9b"] = {**fake_config.model("qwen35-9b"), "draft": "finnes-ikke",
+                                                              "args": ["--spec-type", "draft-mtp", "--spec-draft-n-max", "2", "-np", "1"]}
+    m = ModelManager(fake_config)
+    assert m._model_args("qwen35-9b") == ["-np", "1"]

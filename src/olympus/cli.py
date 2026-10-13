@@ -11,7 +11,7 @@ import sys
 from olympus import __version__
 from olympus import config as cfg
 
-SUBCOMMANDS = {"config", "models", "modell", "doctor", "setup", "service", "auth", "library", "web", "pair", "status", "zeus"}
+SUBCOMMANDS = {"config", "models", "modell", "doctor", "setup", "service", "auth", "library", "web", "pair", "status", "zeus", "bar", "providers"}
 
 
 def _confirm(question: str) -> bool:
@@ -52,6 +52,7 @@ async def _ask(config: cfg.Config, question: str) -> int:
         print(f"olympus: {e}", file=sys.stderr)
         return 1
     finally:
+        await orch.close()
         manager.shutdown()
 
 
@@ -79,7 +80,55 @@ def cmd_config(config: cfg.Config, args: argparse.Namespace) -> int:
     if args.action == "path":
         print(config.home / "config.toml")
         return 0
+    if args.action == "mcp":
+        for name, ok, text in mcp_status(config, check=True):
+            mark = {True: "✓", False: "✗", None: "·"}[ok]
+            print(f"{mark} {name}: {text}")
+        return 0
     return 2
+
+
+def mcp_status(config: cfg.Config, check: bool = True) -> list[tuple[str, bool | None, str]]:
+    """(navn, ok, tekst) per MCP-server. check=True starter hver påslått server en gang og teller verktøyene."""
+    import os
+
+    from olympus import mcp_client
+
+    if not config.get("mcp.enabled", True):
+        return [("mcp", None, "MCP-klienten er slått av (mcp.enabled = false)")]
+    specs = mcp_client.server_specs(config)
+    if not specs:
+        hint = ("" if os.path.exists(mcp_client.OLYMPARCH_MCP)
+                else f" ({mcp_client.OLYMPARCH_MCP} finnes ikke; egne servere: [mcp.servers.<navn>] i config.toml)")
+        return [("mcp", None, "ingen MCP-servere" + hint)]
+    out: list[tuple[str, bool | None, str]] = []
+    for spec in specs:
+        cmd = " ".join([spec.command, *spec.args])
+        src = "funnet automatisk" if spec.source == "auto" else "config"
+        if not spec.enabled:
+            out.append((spec.name, None, f"av ({src}) · {cmd}"))
+            continue
+        if not check:
+            out.append((spec.name, None, f"på ({src}) · {cmd}"))
+            continue
+
+        async def probe(spec=spec) -> tuple[bool, str]:
+            server = mcp_client.McpServer(spec, dict(config.get("mcp", {}) or {}))
+            try:
+                await server.ensure()
+                info = server.info
+                ver = f" «{mcp_client.shown(info.get('name', ''), 40)} {mcp_client.shown(info.get('version', ''), 20)}»"
+                risks = [mcp_client.tool_risk(t) for t in server.tools]
+                count = ", ".join(f"{risks.count(r)} {r}" for r in mcp_client.RISKS if risks.count(r))
+                return True, f"kjører{ver} · {len(server.tools)} verktøy ({count or 'ingen'}) · {src} · {cmd}"
+            except mcp_client.McpError as e:
+                return False, f"{e} · {src}"
+            finally:
+                await server.close()
+
+        ok, text = asyncio.run(probe())
+        out.append((spec.name, ok, text))
+    return out
 
 
 # --- models ---------------------------------------------------------------
@@ -318,6 +367,20 @@ def cmd_doctor(config: cfg.Config) -> int:
         p.mkdir(parents=True, exist_ok=True)
         line(shutil.disk_usage(p).free > 0, f"{key}: {p}")
 
+    # MCP-servere (olymparch-mcp og egne): startes én gang her for å se at de svarer
+    for name, ok, text in mcp_status(config, check=True):
+        line(ok, f"MCP {name}: {text}")
+
+    # Backup utenfor PC-en (Olymparch): vises bare når olymparch-backup er satt opp.
+    if shutil.which("olymparch-backup-status"):
+        res = subprocess.run(["olymparch-backup-status"], capture_output=True, text=True, check=False, timeout=10)
+        marks = {"✓": True, "✗": False, "!": None}
+        for row in res.stdout.splitlines():
+            if row[:1] in marks:
+                line(marks[row[:1]], row[2:])
+            else:
+                print(row)
+
     print("\nAlt ser bra ut." if problems == 0 else f"\n{problems} problem(er) funnet.")
     return 0 if problems == 0 else 1
 
@@ -327,8 +390,8 @@ def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(prog="olympus", description="Lokal AI-assistent i terminalen.")
     p.add_argument("--version", action="version", version=f"olympus {__version__}")
     sub = p.add_subparsers(dest="command")
-    c = sub.add_parser("config", help="les/skriv config")
-    c.add_argument("action", choices=["get", "set", "path"])
+    c = sub.add_parser("config", help="les/skriv config (mcp: vis MCP-serverne og status)")
+    c.add_argument("action", choices=["get", "set", "path", "mcp"])
     c.add_argument("key", nargs="?")
     c.add_argument("value", nargs="?")
     m = sub.add_parser("models", help="list/last ned/slett modeller")
@@ -354,6 +417,14 @@ def build_parser() -> argparse.ArgumentParser:
                                "sudo tailscale up")
     sub.add_parser("pair", help="Par Zeus-appen på telefonen (viser en QR-kode som gjelder i 10 minutter)")
     sub.add_parser("zeus", help="eget vindu som viser hva Zeus gjør og lar deg styre ham (godkjenn, stopp, AI av/på)")
+    pv = sub.add_parser("providers", help="skytjenestene Zeus kan bruke, med status (nøkkel, innlogging)")
+    pv.add_argument("--json", action="store_true", help="maskinlesbart (Olymparch → Innstillinger → Tjenester)")
+    pv.add_argument("--no-login-check", action="store_true", help="ikke kjør CLI-enes innloggingssjekk")
+    sub.add_parser("bar", help="bro for Olymparch-baren: JSON-linjer på stdin/stdout mot den lokale Olympus-serveren",
+                   description="Kobler seg til den lokale Olympus-serveren (websocket + HTTP med nøkkelen i "
+                               "~/.olympus/web-token, som aldri skrives ut). Hver melding fra serveren blir én JSON-linje "
+                               "på stdout, sammen med en kort statuslinje for baren; JSON-linjer på stdin sendes videre. "
+                               "Kobler til igjen av seg selv og avslutter når stdin lukkes. Protokollen: docs/bar.md.")
     sub.add_parser("status", help="levende statusvindu: tjenester, Zeus, maskinen, plan, nedlastinger og telefoner")
     web_p = sub.choices["web"]
     web_p.add_argument("--link", action="store_true", help="bare vis lenken og QR-koden (når tjenesten allerede kjører)")
@@ -392,6 +463,25 @@ def main(argv: list[str] | None = None) -> int:
             from olympus.tui.zeus_window import run as zeus_run
 
             return zeus_run(config)
+        case "providers":
+            import json as _json
+
+            from olympus.model_manager import ModelManager
+            from olympus.providers import Backends
+
+            items = Backends(config, ModelManager(config)).services(check_login=not args.no_login_check)
+            if args.json:
+                print(_json.dumps(items, ensure_ascii=False))
+            else:
+                words = {"ready": "klar", "missing_key": "mangler nøkkel", "not_installed": "ikke installert",
+                         "not_logged_in": "ikke logget inn"}
+                for i in items:
+                    print(f"{i['label']:<16} {words.get(i['status'], i['status']):<17} {i['cost']}")
+            return 0
+        case "bar":
+            from olympus.bar import run as bar_run
+
+            return bar_run(config)
         case "status":
             from olympus.statusview import run as status_run
 

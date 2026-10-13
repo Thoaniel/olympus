@@ -24,3 +24,18 @@ def test_model_suggestion_fits_vram(fake_config, monkeypatch):
     assert setup.suggest_model(fake_config) in fake_config.get("models")
     monkeypatch.setattr("olympus.gpu.read_vram", lambda: VramInfo("x", 2 * 1024**3, 0))
     assert setup.suggest_model(fake_config) is None
+
+
+def test_service_always_runs(tmp_path, monkeypatch):
+    """The server is a user service that is always running: restarted after any exit, never given up on."""
+    from olympus import sysutil
+
+    calls = []
+    monkeypatch.setattr(sysutil, "SYSTEM", "Linux")
+    monkeypatch.setattr(sysutil.Path, "home", staticmethod(lambda: tmp_path))
+    monkeypatch.setattr(sysutil.subprocess, "run", lambda cmd, **_k: calls.append(cmd))
+    sysutil.install_service()
+    unit = (tmp_path / ".config/systemd/user/olympus-web.service").read_text()
+    assert "Restart=always" in unit and "StartLimitIntervalSec=0" in unit
+    assert " web" in next(line for line in unit.splitlines() if line.startswith("ExecStart="))
+    assert ["systemctl", "--user", "enable", "--now", "olympus-web"] in calls

@@ -3,6 +3,8 @@ Description=Olympus: velgeren lærer av samtalene (natt, CPU, noen sekunder)
 
 [Service]
 Type=oneshot
+# ikke mens et spill kjører (Olymparchs spillmodus); neste natt prøver igjen
+ExecCondition=/bin/sh -c '! test -e "%t/olymparch/gaming"'
 WorkingDirectory=%h/dev/olympus
 ExecStart=%h/dev/olympus/.venv/bin/python training/nightly_router.py
 Nice=19

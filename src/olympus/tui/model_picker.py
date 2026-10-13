@@ -50,7 +50,7 @@ class ProvidersScreen(ModalScreen[bool]):
     def _providers(self) -> list[tuple[str, dict[str, Any]]]:
         return [
             (p, s) for p, s in self.config.get("providers", {}).items()
-            if s.get("cost") != "betalt" and s.get("type") in ("openai", "claude-code")
+            if s.get("cost") != "betalt" and s.get("type") in ("openai", "claude-code", "codex")
         ]
 
     def compose(self) -> ComposeResult:

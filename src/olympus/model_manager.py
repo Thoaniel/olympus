@@ -15,7 +15,7 @@ from pathlib import Path
 
 from olympus.backends.llamacpp import LlamaServer, port_open, port_serves
 from olympus.config import Config
-from olympus.gpu import GiB, read_vram
+from olympus.gpu import GiB, gaming, read_vram
 
 
 class VramError(RuntimeError):
@@ -144,6 +144,8 @@ class ModelManager:
     # --- lasting ---------------------------------------------------------
     async def ensure(self, model_id: str) -> LlamaServer:
         """Sørg for at modellen er lastet og returner serveren."""
+        if gaming():
+            raise VramError("Spillmodus: den lokale modellen er av til spillet er ferdig (en skymodell kan svare i mellomtiden).")
         async with self._lock:
             slot = self.slots.get(model_id)
             if slot is not None and slot.server.running():
@@ -258,6 +260,21 @@ class ModelManager:
                 path = None
             if path is not None and path.exists():
                 args += ["--model-draft", str(path), "-ngld", "99"]
+            else:
+                # Uten draft-fila (ikke lastet ned) ville llama-server stoppet på «--spec-type draft-mtp»: modellen
+                # kjøres da uten spekulativ dekoding i stedet for ikke i det hele tatt.
+                out: list[str] = []
+                skip = False
+                for a in args:
+                    if skip:
+                        skip = False
+                    elif a in ("--spec-type", "--spec-draft-n-max", "--spec-draft-n-min", "--draft-max", "--draft-min"):
+                        skip = True
+                    elif not a.startswith(("--spec-type=", "--spec-draft-n-")):
+                        out.append(a)
+                if out != args:
+                    self.on_status(f"{model_id}: draft-modellen {draft} er ikke lastet ned – kjører uten MTP (litt tregere).")
+                args = out
         return args
 
     def _lora_args(self, model_id: str) -> list[str]:

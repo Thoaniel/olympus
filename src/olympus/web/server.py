@@ -101,6 +101,7 @@ class Hub:
         self.task: asyncio.Task | None = None
         self.approvals: dict[str, asyncio.Future] = {}
         self.danger: dict[str, bool] = {}  # farlige kall kan bare godkjennes én gang, aldri «alltid»
+        self.approval_msgs: dict[str, dict] = {}  # kortene som venter: sendes på nytt til en skjerm som kobler seg til
         self.last_used = 0.0  # sist noe ble spurt om fra telefonen (time.monotonic)
         from olympus.lab import open_lab
 
@@ -138,6 +139,17 @@ class Hub:
             if not busy and self.manager.loaded() and time.monotonic() - self.last_used > idle:
                 await self.manager.unload()
                 await self.send({"type": "notice", "text": "Modellen er frigjort for å spare GPU-en; neste melding laster den igjen."})
+
+    async def game_watch(self, interval: float = 2) -> None:
+        """Olymparchs spillmodus (gpu.gaming): når et spill starter, frigjøres den lokale modellen med en gang, så
+        spillet får hele GPU-en. Den lastes ikke igjen før spillet er ferdig (ensure/available sier nei)."""
+        from olympus.gpu import gaming
+
+        while True:
+            await asyncio.sleep(interval)
+            if gaming() and self.manager.loaded():
+                await self.manager.unload()
+                await self.send({"type": "notice", "text": "Spillmodus: den lokale modellen er frigjort, så spillet får GPU-en."})
 
     async def send(self, msg: dict) -> None:
         """Til alle skjermer samtidig (før: én om gangen, så én treg telefon på mobilnett holdt igjen PC-en og de
@@ -294,9 +306,11 @@ class Hub:
         fut = asyncio.get_running_loop().create_future()
         self.approvals[aid] = fut
         self.danger[aid] = approval.danger
-        await self.send({"type": "approval", "id": aid, "tool": call.name, "reason": approval.reason,
-                         "preview": wire_preview(approval.preview), "danger": approval.danger,
-                         "call": call_to_wire(call), "approval": approval_to_wire(approval)})
+        msg = {"type": "approval", "id": aid, "tool": call.name, "reason": approval.reason,
+               "preview": wire_preview(approval.preview), "danger": approval.danger,
+               "call": call_to_wire(call), "approval": approval_to_wire(approval)}
+        self.approval_msgs[aid] = msg
+        await self.send(msg)
         try:
             return await asyncio.wait_for(fut, timeout=600)
         except TimeoutError:
@@ -304,6 +318,7 @@ class Hub:
         finally:
             self.approvals.pop(aid, None)
             self.danger.pop(aid, None)
+            self.approval_msgs.pop(aid, None)
             await self.send({"type": "approval_done", "id": aid})
 
     async def run(self, text: str, origin: str = "") -> None:
@@ -558,6 +573,8 @@ def make_app(c: cfg.Config) -> web.Application:
         await sock.send_json({"type": "player", **PLAYER.status()})  # det PC-en spiller nå (også ingenting)
         if hub.transcript:  # telefonen sov og koblet seg til igjen: vis samtalen som pågår
             await sock.send_json(hub.history())
+        for msg in list(hub.approval_msgs.values()):  # Zeus venter på et ja: kortet vises også på den nye skjermen
+            await sock.send_json(msg)
         try:
             async for m in sock:
                 if m.type == WSMsgType.TEXT:
@@ -615,13 +632,14 @@ def make_app(c: cfg.Config) -> web.Application:
         return web.json_response({"ai": on})
 
     async def api_models(_r):
-        """Modellvalget: {"current": id, "cloud": bool, "choices": [{id, label, cloud, size?, …}]}."""
+        """Modellvalget: {"current": id, "cloud": bool, "choices": [{id, label, cloud, size?, …}],
+        "fallback": [{id, label, cloud, available, why}]} (reservekjeden, i rekkefølge)."""
         hub.sync_model()
         if hub.catalog.fetched == 0 or time.monotonic() - hub.catalog.fetched > hub.catalog.TTL:
             asyncio.get_running_loop().create_task(hub.catalog.refresh())  # skylistene hentes i bakgrunnen
         info = hub.model_info()
         return web.json_response({"current": info["model"], "cloud": info["cloud"], "warning": info["warning"],
-                                  "choices": hub.catalog.choices()})
+                                  "choices": hub.catalog.choices(), "fallback": hub.orch.backends.fallback_info()})
 
     async def api_models_set(request: web.Request):
         wanted = (await body(request)).get("model")
@@ -881,6 +899,7 @@ def make_app(c: cfg.Config) -> web.Application:
     app.router.add_get("/ws", ws)
     app.router.add_static("/", STATIC, show_index=False)
     app.on_shutdown.append(lambda _a: asyncio.to_thread(hub.manager.shutdown))
+    app.on_cleanup.append(lambda _a: hub.orch.close())  # MCP-serverne (olymparch-mcp …) stoppes med Olympus
 
     def backup_root() -> Path:
         return Path(c.get("lab.backup_dir", str(c.home / "backup"))).expanduser()
@@ -1003,8 +1022,13 @@ def make_app(c: cfg.Config) -> web.Application:
 
     async def media_scanner() -> None:
         # Nye filer (fra Zeus, kopiering, ripping) dukker opp av seg selv: rask sjekk av endringstider hvert 5. min.
-        # Samme løkke tar nattens backup (etter kl. 03).
+        # Samme løkke tar nattens backup (etter kl. 03). Ikke mens et spill kjører (spillmodus): da venter begge.
+        from olympus.gpu import gaming
+
         while True:
+            if gaming():
+                await asyncio.sleep(60)
+                continue
             with contextlib.suppress(Exception):
                 await nightly_backup()
             with contextlib.suppress(Exception):
@@ -1055,12 +1079,14 @@ def make_app(c: cfg.Config) -> web.Application:
 
     async def start_unloader(_a):
         _a["unloader"] = asyncio.create_task(hub.idle_unloader())
+        _a["gamewatch"] = asyncio.create_task(hub.game_watch())
         _a["scanner"] = asyncio.create_task(media_scanner())
         _a["downloads"] = asyncio.create_task(download_watcher())
         _a["dl_broadcast"] = asyncio.create_task(download_broadcaster())
 
     async def stop_unloader(_a):
         _a["unloader"].cancel()
+        _a["gamewatch"].cancel()
         _a["scanner"].cancel()
         _a["downloads"].cancel()
         _a["dl_broadcast"].cancel()

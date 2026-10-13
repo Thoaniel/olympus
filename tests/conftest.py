@@ -12,7 +12,9 @@ def home(tmp_path, monkeypatch):
     # Testene skal aldri se ekte llama-servere på maskinen (standardport 8770).
     (tmp_path / "olympus").mkdir()
     # … og aldri åpne TV-castingens strømmeport på hjemmenettet
-    (tmp_path / "olympus" / "config.toml").write_text("[llamacpp]\nport = 18970\n\n[cast]\nenabled = false\n")
+    # … og aldri starte en ekte MCP-server (/usr/bin/olymparch-mcp) – MCP-testene setter opp sin egen
+    (tmp_path / "olympus" / "config.toml").write_text("[llamacpp]\nport = 18970\n\n[cast]\nenabled = false\n\n"
+                                                      "[mcp]\nautodetect = false\n")
     return tmp_path / "olympus"
 
 
@@ -53,3 +55,12 @@ def fake_config(home, tmp_path, monkeypatch):
     # Ingen ekte GPU-sjekk i tester.
     monkeypatch.setattr("olympus.model_manager.read_vram", lambda: None)
     return c
+
+
+@pytest.fixture(autouse=True)
+def _no_game_mode(tmp_path, monkeypatch):
+    """Olymparchs spillmodus-flagg leses fra XDG_RUNTIME_DIR: testene får sin egen, så et spill på PC-en ikke
+    slår av den lokale modellen midt i en testkjøring."""
+    run = tmp_path / "run"
+    run.mkdir()
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(run))
